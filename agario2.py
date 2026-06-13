@@ -1,98 +1,146 @@
-from pygame import *
 from math import hypot
+from pygame import *
 from random import randint
+from socket import socket, AF_INET, SOCK_STREAM
+from threading import Thread
+
+# Налаштування мережі
+HOST = "127.0.0.1"
+PORT = 5000
+sock = socket(AF_INET, SOCK_STREAM)
+sock.connect((HOST, PORT))
+
+# Отримуємо свої дані при старті
+resv_data = sock.recv(64).decode().split(",")
+my_id, my_x, my_y, my_r = map(int, resv_data)
+
+# Налаштування вікна
+size = (1000, 800)
+init()
+window = display.set_mode(size)
+clock = time.Clock()
+
+all_players = {}  # Словник {id: [x, y, r]}
+
+player_img = image.load("images/player.png")
+enemy_img = image.load("images/enemy.png")
+bg_img = image.load("images/bg.avif")
+
+def receive_data():
+    global all_players, lose
+    while True:
+        try:
+            data = sock.recv(4096).decode()
+            if "LOSE" in data:
+                lose = True
+            elif data:
+                # Оновлюємо дані ворогів
+                for p in data.split("|"):
+                    if "," in p:
+                        parts = p.split(",")
+                        if len(parts) >= 4:
+                            pid = int(parts[0])
+                            if pid != my_id:
+                                all_players[pid] = [int(parts[1]), int(parts[2]), int(parts[3])]
+        except:
+            break
+
+
+Thread(target=receive_data, daemon=True).start()
 
 
 class Ball:
-    def __init__(self, x, y, radius, color, speed = 0):
-        self.speed = speed
-        self.x = x
-        self.y = y
+    def __init__(self, x, y, radius, color, speed=0):
+        self.x, self.y = x, y
         self.radius = radius
         self.color = color
-        self.scale = 1
+        self.base_speed = speed
+        self.scale = 1.0
+        self.growth_limit = 60
 
-    def move(self):
+    def update_player(self, cells):
+        # Масштабування
+        self.scale = self.growth_limit / self.radius if self.radius > self.growth_limit else 1.0
+
         keys = key.get_pressed()
-        if keys[K_w]:
-            self.y -= self.speed
-        if keys[K_s]:
-            self.y += self.speed
-        if keys[K_a]:
-            self.x -= self.speed
-        if keys[K_d]:
-            self.x += self.speed
+        speed = 15 * self.scale
+        if keys[K_UP]: self.y -= speed
+        if keys[K_DOWN]: self.y += speed
+        if keys[K_LEFT]: self.x -= speed
+        if keys[K_RIGHT]: self.x += speed
 
-    def reset(self):
-        self.scale = max(0.3, min(50 / self.radius, 1.5))
-        player_screen_radius = int(self.radius * self.scale)
-        draw.circle(window, self.color, (size[0] // 2, size[1] // 2), self.radius)
+        # Логіка поїдання (спрощено)
+        for cell in cells[:]:
+            if self.collidecircle(cell):
+                self.radius += cell.radius * 0.2
+                cells.remove(cell)
+
+    def draw(self, surface, camera_x, camera_y, camera_scale):
+        sx = int((self.x - camera_x) * camera_scale + size[0] // 2)
+        sy = int((self.y - camera_y) * camera_scale + size[1] // 2)
+        r = int(self.radius * camera_scale)
+        draw.circle(surface, self.color, (sx, sy), max(2, r))
 
     def collidecircle(self, ball2):
         distance = hypot(self.x - ball2.x, self.y - ball2.y)
         return distance < (self.radius + ball2.radius)
 
-
-init()
-
-size = 500, 500
-
-window = display.set_mode(size)
-display.set_caption("Dota 3")
-clock = time.Clock()
-
-# bg = image.load("img.png")
-# bg = transform.scale(bg, size)
-
-ball = Ball(300, 300, 25, (255, 100, 255), 5)
-
+# TODO: МИ ТУТ ЗУПИНИЛИСЯ!!!!
+# Ініціалізація
+ball = Ball(my_x, my_y, my_r, (0, 255, 100), speed=15)
+cells = [Ball(randint(-2000, 2000), randint(-2000, 2000), 10, (200, 200, 0)) for _ in range(300)]
 f = font.Font(None, 50)
-running = True
-lose = False
+running, lose = True, False
 
-cells = [Ball(randint(-2000, 2000), randint(-2000, 2000), 10,
-              (randint(50, 220), randint(50, 220), randint(50, 220)))
-         for _ in range(300)]
+WORLD_SIZE = 4000
 
 while running:
     for e in event.get():
         if e.type == QUIT:
-            quit()
+            running = False
 
     window.fill((40, 40, 40))
 
-    to_remove = []
-    for cell in cells:
-        if cell.collidecircle(ball):
-            to_remove.append(cell)
-            ball.radius += int(cell.radius * 0.2)
-        else:
-            sx = int((cell.x - ball.x) * ball.scale + size[0] // 2)
-            sy = int((cell.y - ball.y) * ball.scale + size[1] // 2)
+    bg_scaled_size = int(WORLD_SIZE * ball.scale)
+    scaled_bg = transform.scale(bg_img, (bg_scaled_size, bg_scaled_size))
 
-            cell_radius = int(cell.radius * ball.scale)
-            draw.circle(window, cell.color, (sx, sy), cell_radius)
+    base_bg_x = int((-2000 - ball.x) * ball.scale + size[0] // 2)
+    base_bg_y = int((-2000 - ball.y) * ball.scale + size[1] // 2)
 
-    for cell in to_remove:
-        cells.remove(cell)
+    start_x = (base_bg_x % bg_scaled_size) - bg_scaled_size
+    start_y = (base_bg_y % bg_scaled_size) - bg_scaled_size
+
+    for x in range(start_x, size[0], bg_scaled_size):
+        for y in range(start_y, size[1], bg_scaled_size):
+            window.blit(scaled_bg, (x, y))
 
     if not lose:
-        ball.reset()
+        ball.update_player(cells)
+        # Відправка своїх координат на сервер
+        sock.send(f"{my_id},{int(ball.x)},{int(ball.y)},{int(ball.radius)},Player".encode())
 
-    if lose:
-        t = f.render("U lose!", 1, (244, 0, 0))
-        window.blit(t, (400, 500))
+    # Малювання яблук
+    for cell in cells:
+        cell.draw(window, ball.x, ball.y, ball.scale)
 
+    # Малювання ворогів
+    for pid, data in all_players.items():
+        # Малюємо ворога як червоне коло
+        ox, oy, orad = data
+        sx = int((ox - ball.x) * ball.scale + size[0] // 2)
+        sy = int((oy - ball.y) * ball.scale + size[1] // 2)
+        # draw.circle(window, (255, 50, 50), (sx, sy), max(4, int(orad * ball.scale)))
+        r = max(4, int(orad * ball.scale))
 
+        scaled_enemy = transform.scale(enemy_img, (r * 2, r * 2))
+        window.blit(scaled_enemy, (sx - r, sy - r))
 
-
-    # window.blit(bg, (0, 0))
-
-    ball.move()
-    ball.reset()
+    if not lose:
+        ball.draw(window, ball.x, ball.y, 1.0 if ball.radius < 60 else ball.scale)
+    else:
+        window.blit(f.render("U lose!", 1, (244, 0, 0)), (400, 500))
 
     display.update()
     clock.tick(60)
 
-    if not lose:
-        ball.move()
+quit()
